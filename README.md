@@ -1,4 +1,8 @@
+# IntruderSelfie
+
 IntruderSelfie silently snaps a front-camera photo **every time the screen is unlocked** with a precise timestamp.
+
+![Screenshot](en-US/images/phoneScreenshots/1.png)
 
 ## Key points
 * Runs as a **lightweight foreground service** after device boot – no need to keep the app open.
@@ -15,3 +19,6 @@ IntruderSelfie silently snaps a front-camera photo **every time the screen is un
 ## Privacy & Security
 - No analytics, trackers, or background network traffic.
 - Source code is publicly available for review.
+
+## License
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
