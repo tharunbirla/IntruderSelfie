@@ -35,24 +35,31 @@ import androidx.core.content.ContextCompat
 import com.tharunbirla.intruderselfie.ui.theme.IntruderSelfieTheme
 import androidx.activity.compose.LocalActivity
 import android.app.Activity
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SetupGuideScreen(onSetupComplete: () -> Unit) {
     val context = LocalContext.current
     val activity = LocalActivity.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    // Helper to check storage permission logic
+    fun checkStoragePermission(): Boolean {
+        return if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+            // Android 9 and below: Need WRITE_EXTERNAL_STORAGE
+            checkPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        } else {
+            // Android 10+: No permission needed for own files (Scoped Storage)
+            true
+        }
+    }
 
     // State to track if permissions are granted.
     var hasCameraPermission by remember { mutableStateOf(checkPermission(context, Manifest.permission.CAMERA)) }
-    var hasStoragePermission by remember {
-        mutableStateOf(
-            if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
-                checkPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE)
-            } else {
-                checkPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE)
-            }
-        )
-    }
+    var hasStoragePermission by remember { mutableStateOf(checkStoragePermission()) }
     var hasNotificationPermission by remember {
         mutableStateOf(
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -63,26 +70,20 @@ fun SetupGuideScreen(onSetupComplete: () -> Unit) {
         )
     }
 
-    // Update states when the screen recomposes
-    LaunchedEffect(Unit) {
-        snapshotFlow {
-            Triple(
-                checkPermission(context, Manifest.permission.CAMERA),
-                if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
-                    checkPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                } else {
-                    checkPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE)
-                },
+    // Observe Lifecycle to refresh permissions on resume (e.g. returning from Settings)
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                hasCameraPermission = checkPermission(context, Manifest.permission.CAMERA)
+                hasStoragePermission = checkStoragePermission()
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    checkPermission(context, Manifest.permission.POST_NOTIFICATIONS)
-                } else {
-                    true
+                    hasNotificationPermission = checkPermission(context, Manifest.permission.POST_NOTIFICATIONS)
                 }
-            )
-        }.collect { (camera, storage, notifications) ->
-            hasCameraPermission = camera
-            hasStoragePermission = storage
-            hasNotificationPermission = notifications
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
         }
     }
 
@@ -193,23 +194,22 @@ fun SetupGuideScreen(onSetupComplete: () -> Unit) {
                 )
             }
 
-            // Storage permission for older Android or general media access
-            item {
-                val storagePermission = if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
-                    Manifest.permission.WRITE_EXTERNAL_STORAGE
-                } else {
-                    Manifest.permission.READ_EXTERNAL_STORAGE
+            // Storage permission for older Android (only needed for API <= 28)
+            // On API 29+, Scoped Storage handles own files without permission.
+            if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+                item {
+                    val storagePermission = Manifest.permission.WRITE_EXTERNAL_STORAGE
+                    PermissionCard(
+                        icon = Icons.Default.PhotoLibrary,
+                        title = "Photo Storage Access",
+                        description = "Required to save and display captured photos on your device.",
+                        isGranted = hasStoragePermission,
+                        onGrantClick = {
+                            requestStoragePermissionLauncher.launch(storagePermission)
+                        },
+                        activity = activity
+                    )
                 }
-                PermissionCard(
-                    icon = Icons.Default.PhotoLibrary,
-                    title = "Photo Storage Access",
-                    description = "Required to save and display captured photos on your device.",
-                    isGranted = hasStoragePermission,
-                    onGrantClick = {
-                        requestStoragePermissionLauncher.launch(storagePermission)
-                    },
-                    activity = activity
-                )
             }
 
             // Notification permission for Android 13+
