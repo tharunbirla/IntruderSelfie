@@ -44,6 +44,7 @@ import java.util.Locale
 @Composable
 fun MainScreen(viewModel: MainViewModel) {
     val appEnabled by viewModel.appEnabled.collectAsState()
+    val portraitMode by viewModel.portraitMode.collectAsState()
     val capturedPhotos by viewModel.capturedPhotos.collectAsState()
     val selectedPhotos by viewModel.selectedPhotos.collectAsState()
     val previewPhotoUri by viewModel.previewPhotoUri.collectAsState()
@@ -121,28 +122,56 @@ fun MainScreen(viewModel: MainViewModel) {
                     containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
                 )
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = "Enable Intruder Detection",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Switch(
-                        checked = appEnabled,
-                        onCheckedChange = { isChecked ->
-                            viewModel.toggleAppEnabled(isChecked)
-                        },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = MaterialTheme.colorScheme.primary,
-                            checkedTrackColor = MaterialTheme.colorScheme.primaryContainer
+                Column {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "Enable Intruder Detection",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                    )
+                        Switch(
+                            checked = appEnabled,
+                            onCheckedChange = { isChecked ->
+                                viewModel.toggleAppEnabled(isChecked)
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = MaterialTheme.colorScheme.primary,
+                                checkedTrackColor = MaterialTheme.colorScheme.primaryContainer
+                            )
+                        )
+                    }
+
+                    HorizontalDivider()
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "Force Portrait Mode",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Switch(
+                            checked = portraitMode,
+                            onCheckedChange = { isChecked ->
+                                viewModel.togglePortraitMode(isChecked)
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = MaterialTheme.colorScheme.primary,
+                                checkedTrackColor = MaterialTheme.colorScheme.primaryContainer
+                            )
+                        )
+                    }
                 }
             }
 
