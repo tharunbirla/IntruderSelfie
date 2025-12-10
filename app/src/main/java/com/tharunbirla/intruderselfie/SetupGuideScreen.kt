@@ -19,8 +19,8 @@ import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.DoneAll
-import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -34,8 +34,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.tharunbirla.intruderselfie.ui.theme.IntruderSelfieTheme
 import androidx.activity.compose.LocalActivity
-
-import android.app.Activity // This import is crucial for shouldShowRequestPermissionRationale
+import android.app.Activity
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -44,17 +43,12 @@ fun SetupGuideScreen(onSetupComplete: () -> Unit) {
     val activity = LocalActivity.current
 
     // State to track if permissions are granted.
-    // We'll update this whenever a permission result comes back.
     var hasCameraPermission by remember { mutableStateOf(checkPermission(context, Manifest.permission.CAMERA)) }
     var hasStoragePermission by remember {
         mutableStateOf(
-            // For Android 10 (API 29) and above, READ_EXTERNAL_STORAGE might not be strictly needed for MediaStore access
-            // if your app only deals with its own media files saved via MediaStore.
-            // However, if you need to access *any* media on storage or older API levels, it's crucial.
-            // For simplicity, we check WRITE_EXTERNAL_STORAGE for older devices and READ_EXTERNAL_STORAGE for all.
-            if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) { // <= Android 9 (Pie)
+            if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
                 checkPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE)
-            } else { // Android 10 (Q) and above
+            } else {
                 checkPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE)
             }
         )
@@ -69,7 +63,7 @@ fun SetupGuideScreen(onSetupComplete: () -> Unit) {
         )
     }
 
-    // Update states when the screen recomposes (e.g., after returning from settings)
+    // Update states when the screen recomposes
     LaunchedEffect(Unit) {
         snapshotFlow {
             Triple(
@@ -163,7 +157,7 @@ fun SetupGuideScreen(onSetupComplete: () -> Unit) {
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface
                     )
-                    Spacer(modifier = Modifier.width(4.dp)) // Corrected Spacer usage
+                    Spacer(modifier = Modifier.width(4.dp))
                     FeatureBullet("🤫 Capture secret photos on failed unlock attempts.")
                     FeatureBullet("📸 View captured photos directly in the app's gallery.")
                     FeatureBullet("🗑️ Easily delete unwanted intruder photos.")
@@ -195,16 +189,16 @@ fun SetupGuideScreen(onSetupComplete: () -> Unit) {
                     onGrantClick = {
                         requestCameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                     },
-                    activity = activity // Pass the activity to the composable
+                    activity = activity
                 )
             }
 
             // Storage permission for older Android or general media access
             item {
                 val storagePermission = if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
-                    Manifest.permission.WRITE_EXTERNAL_STORAGE // For API 28 and below
+                    Manifest.permission.WRITE_EXTERNAL_STORAGE
                 } else {
-                    Manifest.permission.READ_EXTERNAL_STORAGE // For API 29 and above, usually needed for querying MediaStore
+                    Manifest.permission.READ_EXTERNAL_STORAGE
                 }
                 PermissionCard(
                     icon = Icons.Default.PhotoLibrary,
@@ -214,7 +208,7 @@ fun SetupGuideScreen(onSetupComplete: () -> Unit) {
                     onGrantClick = {
                         requestStoragePermissionLauncher.launch(storagePermission)
                     },
-                    activity = activity // Pass the activity to the composable
+                    activity = activity
                 )
             }
 
@@ -229,7 +223,7 @@ fun SetupGuideScreen(onSetupComplete: () -> Unit) {
                         onGrantClick = {
                             requestNotificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                         },
-                        activity = activity // Pass the activity to the composable
+                        activity = activity
                     )
                 }
             }
@@ -313,7 +307,7 @@ fun PermissionCard(
     description: String,
     isGranted: Boolean,
     onGrantClick: () -> Unit,
-    activity: Activity? // Added Activity parameter here
+    activity: Activity?
 ) {
     val context = LocalContext.current
     Card(
@@ -359,7 +353,6 @@ fun PermissionCard(
                 } else {
                     Button(
                         onClick = {
-                            // Determine the permission string based on the card's title
                             val permissionToRequest = when (title) {
                                 "Camera Access" -> Manifest.permission.CAMERA
                                 "Photo Storage Access" -> if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
@@ -368,16 +361,13 @@ fun PermissionCard(
                                     Manifest.permission.READ_EXTERNAL_STORAGE
                                 }
                                 "Notification Permission" -> Manifest.permission.POST_NOTIFICATIONS
-                                else -> "" // Should not happen
+                                else -> ""
                             }
 
-                            // Check if permission was permanently denied
-                            // Ensure 'activity' is not null before calling shouldShowRequestPermissionRationale
                             if (permissionToRequest.isNotEmpty() && activity != null &&
                                 ContextCompat.checkSelfPermission(context, permissionToRequest) == PackageManager.PERMISSION_DENIED &&
-                                !activity.shouldShowRequestPermissionRationale(permissionToRequest) // Now correctly using 'activity'
+                                !activity.shouldShowRequestPermissionRationale(permissionToRequest)
                             ) {
-                                // Direct user to app settings if permission is permanently denied
                                 val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
                                     data = Uri.fromParts("package", context.packageName, null)
                                 }
@@ -403,13 +393,4 @@ fun PermissionCard(
  */
 fun checkPermission(context: Context, permission: String): Boolean {
     return ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
-}
-
-@Preview(showBackground = true)
-@Composable
-fun PreviewSetupGuideScreen() {
-    IntruderSelfieTheme {
-        // For preview, we pass null for activity as it's not a real activity context
-        SetupGuideScreen(onSetupComplete = {})
-    }
 }

@@ -57,13 +57,21 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    // Use the Activity-scoped ViewModel
-                    MainScreen(viewModel = viewModel)
+                    val isSetupCompleted by viewModel.isSetupCompleted.collectAsState()
+
+                    if (isSetupCompleted) {
+                        MainScreen(viewModel = viewModel)
+                    } else {
+                        SetupGuideScreen(onSetupComplete = {
+                            viewModel.completeSetup()
+                        })
+                    }
                 }
             }
         }
         // Initiate permission checks, which will then allow the UI to control the service
-        checkAndRequestCameraPermission()
+        // Only if setup is already done, otherwise SetupGuideScreen handles it.
+        // checkAndRequestCameraPermission() // Moved to logic inside SetupGuideScreen
     }
 
     private fun checkAndRequestCameraPermission() {
