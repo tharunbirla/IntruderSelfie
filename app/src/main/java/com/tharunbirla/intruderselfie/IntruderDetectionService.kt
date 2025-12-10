@@ -41,6 +41,9 @@ class IntruderDetectionService : Service() {
     private var backgroundThread: HandlerThread? = null
     private var imageReader: ImageReader? = null
 
+    // Flag to indicate when we are ready to capture the actual photo
+    private var isReadyToCapture = false
+
     // Dynamic BroadcastReceiver for ACTION_USER_PRESENT
     private val unlockReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -178,18 +181,28 @@ class IntruderDetectionService : Service() {
             return
         }
 
+        // Increase maxImages to 3 to handle preview buffering
         imageReader = ImageReader.newInstance(
             largest.width,
             largest.height,
             ImageFormat.JPEG, // Use ImageFormat from android.graphics
-            1
+            3
         ).apply {
             setOnImageAvailableListener({ reader ->
-                reader.acquireLatestImage()?.use { img ->
-                    val buffer = img.planes[0].buffer
-                    val bytes = ByteArray(buffer.remaining()).also { buffer.get(it) }
-                    savePhoto(bytes)
-                } ?: Log.e(TAG, "ImageReader acquired null image.")
+                // Check if we are ready to capture
+                if (isReadyToCapture) {
+                    reader.acquireLatestImage()?.use { img ->
+                        val buffer = img.planes[0].buffer
+                        val bytes = ByteArray(buffer.remaining()).also { buffer.get(it) }
+                        savePhoto(bytes)
+                        // Reset flag
+                        isReadyToCapture = false
+                    } ?: Log.e(TAG, "ImageReader acquired null image.")
+                } else {
+                    // Drain preview frames
+                    val img = reader.acquireLatestImage()
+                    img?.close()
+                }
             }, backgroundHandler)
         }
 
@@ -198,16 +211,55 @@ class IntruderDetectionService : Service() {
             camera.createCaptureSession(
                 outputs,
                 object : CameraCaptureSession.StateCallback() {
-                    // In IntruderDetectionService.kt, inside createImageSession() -> onConfigured()
                     override fun onConfigured(session: CameraCaptureSession) {
                         Log.d(TAG, "CameraCaptureSession configured.")
-                        val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
-                            addTarget(imageReader!!.surface)
-                            // REMOVED: set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
-                            // The camera's default auto-exposure for TEMPLATE_STILL_CAPTURE will now apply.
-                            set(CaptureRequest.JPEG_ORIENTATION, getJpegOrientation(characteristics))
-                        }.build()
-                        session.capture(request, captureCallback, backgroundHandler)
+
+                        try {
+                            // 1. Preview / Warmup Request to let AE converge
+                            // We use TEMPLATE_PREVIEW but target the ImageReader (JPEG).
+                            // This effectively takes a burst of JPEGs which we discard until ready.
+                            val previewRequest = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                                addTarget(imageReader!!.surface)
+                                set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                            }.build()
+
+                            // Start repeating to run AE
+                            session.setRepeatingRequest(previewRequest, null, backgroundHandler)
+
+                            // 2. Schedule the actual capture after delay
+                            backgroundHandler?.postDelayed({
+                                try {
+                                    // Stop repeating (stop "preview")
+                                    session.stopRepeating()
+
+                                    // 3. Create Final Capture Request
+                                    val captureRequest = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+                                        addTarget(imageReader!!.surface)
+                                        // Set orientation
+                                        set(CaptureRequest.JPEG_ORIENTATION, getJpegOrientation(characteristics))
+                                        // Set AE Mode ON
+                                        set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                                    }.build()
+
+                                    // Enable saving
+                                    isReadyToCapture = true
+
+                                    // Capture
+                                    session.capture(captureRequest, captureCallback, backgroundHandler)
+
+                                } catch (e: CameraAccessException) {
+                                    Log.e(TAG, "Capture error: ${e.message}")
+                                    stopCameraResources()
+                                } catch (e: IllegalStateException) {
+                                    Log.e(TAG, "Session closed before capture: ${e.message}")
+                                    stopCameraResources()
+                                }
+                            }, 1000) // 1 second delay for AE convergence
+
+                        } catch (e: CameraAccessException) {
+                            Log.e(TAG, "Session access error: ${e.message}")
+                            stopCameraResources()
+                        }
                     }
 
                     override fun onConfigureFailed(session: CameraCaptureSession) {
@@ -243,6 +295,13 @@ class IntruderDetectionService : Service() {
 
     // Helper to get JPEG orientation based on device orientation and camera sensor orientation
     private fun getJpegOrientation(characteristics: CameraCharacteristics): Int {
+        // Check for forced Portrait Mode
+        val prefs = getSharedPreferences(AppConstants.PREFS_NAME, Context.MODE_PRIVATE)
+        if (prefs.getBoolean(AppConstants.KEY_PORTRAIT_MODE, false)) {
+            // Force 270 degrees (standard for upright front camera selfies)
+            return 270
+        }
+
         val sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
         val deviceRotation = (applicationContext.getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager).defaultDisplay.rotation
         val surfaceRotation = when(deviceRotation) {
@@ -321,6 +380,7 @@ class IntruderDetectionService : Service() {
         backgroundThread?.quitSafely()
         backgroundThread = null // Set to null to allow re-creation
         backgroundHandler = null // Set to null
+        isReadyToCapture = false // Reset
         Log.d(TAG, "Camera resources closed.")
         // The service does NOT stop itself here after a single capture.
         // It remains running in the foreground, waiting for the next unlock event.

@@ -1,8 +1,9 @@
 package com.tharunbirla.intruderselfie
 
+import android.Manifest
 import android.app.Application
-import android.content.ContentValues
 import android.content.Context
+import android.content.pm.PackageManager
 import android.database.ContentObserver
 import android.net.Uri
 import android.os.Build
@@ -11,6 +12,7 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
 import android.util.Log
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
@@ -32,6 +34,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _appEnabled = MutableStateFlow(prefs.getBoolean(AppConstants.KEY_APP_ENABLED, true))
     val appEnabled: StateFlow<Boolean> = _appEnabled.asStateFlow()
 
+    // StateFlow for Portrait Mode
+    private val _portraitMode = MutableStateFlow(prefs.getBoolean(AppConstants.KEY_PORTRAIT_MODE, false))
+    val portraitMode: StateFlow<Boolean> = _portraitMode.asStateFlow()
+
     // StateFlow to hold the list of captured photos
     private val _capturedPhotos = MutableStateFlow<List<CapturedPhoto>>(emptyList())
     val capturedPhotos: StateFlow<List<CapturedPhoto>> = _capturedPhotos.asStateFlow()
@@ -50,7 +56,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             super.onChange(selfChange, uri)
             // Refresh photos only if the change is related to the MediaStore's external content
             // or specifically points to a path within our app's photo directory.
-            // This prevents unnecessary refreshes from other apps' media changes.
             if (uri != null && (uri.path?.contains("IntruderSelfie") == true || uri == MediaStore.Images.Media.EXTERNAL_CONTENT_URI)) {
                 Log.d("MainViewModel", "ContentObserver onChange: $uri, refreshing photos.")
                 loadCapturedPhotos()
@@ -70,8 +75,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         loadCapturedPhotos()
 
         // Ensure the IntruderDetection service state matches the initial UI state
+        // BUT only if we have permissions.
+        checkServiceState()
+    }
+
+    /**
+     * Checks if the service should be running based on 'enabled' state AND permissions.
+     */
+    fun checkServiceState() {
         if (_appEnabled.value) {
-            IntruderDetection.start(context)
+            val cameraPermission = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
+            if (cameraPermission == PackageManager.PERMISSION_GRANTED) {
+                Log.d("MainViewModel", "App enabled and permissions granted. Starting service.")
+                IntruderDetection.start(context)
+            } else {
+                Log.d("MainViewModel", "App enabled but Camera permission missing. Not starting service.")
+                // Ensure it's stopped if it was running
+                IntruderDetection.stop(context)
+            }
+        } else {
+            Log.d("MainViewModel", "App disabled. Stopping service.")
+            IntruderDetection.stop(context)
         }
     }
 
@@ -83,12 +107,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun toggleAppEnabled(enabled: Boolean) {
         _appEnabled.value = enabled
         prefs.edit().putBoolean(AppConstants.KEY_APP_ENABLED, enabled).apply()
+        checkServiceState()
+    }
 
-        if (enabled) {
-            IntruderDetection.start(context)
-        } else {
-            IntruderDetection.stop(context)
-        }
+    fun togglePortraitMode(enabled: Boolean) {
+        _portraitMode.value = enabled
+        prefs.edit().putBoolean(AppConstants.KEY_PORTRAIT_MODE, enabled).apply()
     }
 
     /**
@@ -209,27 +233,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             withContext(Dispatchers.IO) {
                 urisToDelete.forEach { uri ->
                     try {
-                        // For Android 10 (API 29) and above, deleting public media that your
-                        // app *did not* create, or that is not in your app's private storage,
-                        // might require user consent via a RecoverableSecurityException or
-                        // MediaStore.createDeleteRequest().
-                        // However, for files *created by your own app* in its designated public directory
-                        // (like Pictures/IntruderSelfie), direct deletion with ContentResolver.delete()
-                        // often works without explicit permission prompts if the app is the owner
-                        // or has modify access.
                         val deletedRows = context.contentResolver.delete(uri, null, null)
                         if (deletedRows > 0) {
                             Log.d("MainViewModel", "Deleted photo: $uri")
                         } else {
                             Log.w("MainViewModel", "Failed to delete photo: $uri (rows: $deletedRows)")
-                            // If deletion fails, you might need more robust handling for API 29+
-                            // involving MediaStore.createDeleteRequest() to prompt the user.
                         }
                     } catch (e: Exception) {
                         Log.e("MainViewModel", "Error deleting photo: $uri", e)
-                        // This might catch SecurityException if deletion requires user interaction
-                        // on newer Android versions. For a robust solution, you'd handle this
-                        // by showing a confirmation dialog/request for deletion permission.
                     }
                 }
             }

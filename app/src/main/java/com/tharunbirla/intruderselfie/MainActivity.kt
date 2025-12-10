@@ -16,17 +16,19 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import com.tharunbirla.intruderselfie.ui.theme.IntruderSelfieTheme
-import androidx.lifecycle.viewmodel.compose.viewModel // Import for viewModel()
+import androidx.activity.viewModels
 
 class MainActivity : ComponentActivity() {
 
     private val TAG = "MainActivity"
+    private val viewModel: MainViewModel by viewModels()
 
     // Existing permission launchers (keep them as they are)
     private val requestCameraPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
             if (isGranted) {
                 Log.d(TAG, "Camera permission granted.")
+                viewModel.checkServiceState()
                 checkAndRequestNotificationPermission()
             } else {
                 Log.w(TAG, "Camera permission denied.")
@@ -55,8 +57,7 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    // Inject ViewModel using the viewModel() helper function
-                    val viewModel: MainViewModel = viewModel()
+                    // Use the Activity-scoped ViewModel
                     MainScreen(viewModel = viewModel)
                 }
             }
