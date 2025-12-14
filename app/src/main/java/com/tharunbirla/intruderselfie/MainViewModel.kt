@@ -34,10 +34,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _appEnabled = MutableStateFlow(prefs.getBoolean(AppConstants.KEY_APP_ENABLED, true))
     val appEnabled: StateFlow<Boolean> = _appEnabled.asStateFlow()
 
-    // StateFlow for Portrait Mode
-    private val _portraitMode = MutableStateFlow(prefs.getBoolean(AppConstants.KEY_PORTRAIT_MODE, false))
-    val portraitMode: StateFlow<Boolean> = _portraitMode.asStateFlow()
-
     // StateFlow to track if setup is completed
     private val _isSetupCompleted = MutableStateFlow(prefs.getBoolean("setup_completed", false))
     val isSetupCompleted: StateFlow<Boolean> = _isSetupCompleted.asStateFlow()
@@ -113,11 +109,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _appEnabled.value = enabled
         prefs.edit().putBoolean(AppConstants.KEY_APP_ENABLED, enabled).apply()
         checkServiceState()
-    }
-
-    fun togglePortraitMode(enabled: Boolean) {
-        _portraitMode.value = enabled
-        prefs.edit().putBoolean(AppConstants.KEY_PORTRAIT_MODE, enabled).apply()
     }
 
     fun loadCapturedPhotos() {

@@ -35,9 +35,11 @@ import androidx.core.content.ContextCompat
 import com.tharunbirla.intruderselfie.ui.theme.IntruderSelfieTheme
 import androidx.activity.compose.LocalActivity
 import android.app.Activity
+import androidx.compose.foundation.Image
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import coil.compose.rememberAsyncImagePainter
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -132,11 +134,11 @@ fun SetupGuideScreen(onSetupComplete: () -> Unit) {
             // About the App Section
             item {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(
-                        imageVector = Icons.Default.Description,
-                        contentDescription = "App Info",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(64.dp)
+                    // Use App Icon instead of generic icon
+                    Image(
+                        painter = rememberAsyncImagePainter(R.mipmap.ic_launcher),
+                        contentDescription = "App Icon",
+                        modifier = Modifier.size(80.dp)
                     )
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
@@ -159,10 +161,10 @@ fun SetupGuideScreen(onSetupComplete: () -> Unit) {
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Spacer(modifier = Modifier.width(4.dp))
-                    FeatureBullet("🤫 Capture secret photos on failed unlock attempts.")
-                    FeatureBullet("📸 View captured photos directly in the app's gallery.")
-                    FeatureBullet("🗑️ Easily delete unwanted intruder photos.")
-                    FeatureBullet("✨ Modern and user-friendly interface.")
+                    FeatureBullet("Capture secret photos on failed unlock attempts.")
+                    FeatureBullet("View captured photos directly in the app gallery.")
+                    FeatureBullet("Easily delete unwanted intruder photos.")
+                    FeatureBullet("Modern and user-friendly interface.")
                     Spacer(modifier = Modifier.height(24.dp))
                     Divider(color = MaterialTheme.colorScheme.outlineVariant)
                     Spacer(modifier = Modifier.height(24.dp))

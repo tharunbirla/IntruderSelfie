@@ -18,8 +18,14 @@ class BootCompletedReceiver : BroadcastReceiver() {
             val isAppEnabled = prefs.getBoolean(AppConstants.KEY_APP_ENABLED, true) // Default to true
 
             if (isAppEnabled) {
-                Log.d(TAG, "Device booted and app is enabled. Starting IntruderDetectionService.")
-                IntruderDetection.start(context)
+                // Check permissions before starting
+                if (androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.CAMERA)
+                    == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                    Log.d(TAG, "Device booted, app enabled, and permissions granted. Starting service.")
+                    IntruderDetection.start(context)
+                } else {
+                    Log.w(TAG, "Device booted and app enabled, but CAMERA permission missing. Service not started.")
+                }
             } else {
                 Log.d(TAG, "Device booted but app is disabled. Not starting service.")
             }

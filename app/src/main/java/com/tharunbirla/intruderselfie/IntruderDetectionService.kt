@@ -295,21 +295,8 @@ class IntruderDetectionService : Service() {
 
     // Helper to get JPEG orientation based on device orientation and camera sensor orientation
     private fun getJpegOrientation(characteristics: CameraCharacteristics): Int {
-        val sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 270
-
-        // Check for forced Portrait Mode (cached if possible, but here we read directly for simplicity as it is once per capture)
-        // Note: Reading prefs here is acceptable as it happens on a background thread (Camera Capture Callback).
-        val prefs = getSharedPreferences(AppConstants.PREFS_NAME, Context.MODE_PRIVATE)
-        val forcePortrait = prefs.getBoolean(AppConstants.KEY_PORTRAIT_MODE, false)
-
-        // Get device rotation
-        val deviceRotation = if (forcePortrait) {
-            // Assume device is in Portrait (0 degrees) if forcing portrait
-            android.view.Surface.ROTATION_0
-        } else {
-            (applicationContext.getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager).defaultDisplay.rotation
-        }
-
+        val sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
+        val deviceRotation = (applicationContext.getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager).defaultDisplay.rotation
         val surfaceRotation = when(deviceRotation) {
             android.view.Surface.ROTATION_0 -> 0
             android.view.Surface.ROTATION_90 -> 90
@@ -317,15 +304,11 @@ class IntruderDetectionService : Service() {
             android.view.Surface.ROTATION_270 -> 270
             else -> 0
         }
-
-        // Standard formula for JPEG Orientation
-        val lensFacing = characteristics.get(CameraCharacteristics.LENS_FACING)
-        val isFront = lensFacing == CameraCharacteristics.LENS_FACING_FRONT
-
-        return if (isFront) {
-             (sensorOrientation + surfaceRotation) % 360
+        val frontCamera = characteristics.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
+        return if (frontCamera) {
+            (sensorOrientation + surfaceRotation + 270) % 360
         } else {
-             (sensorOrientation - surfaceRotation + 360) % 360
+            (sensorOrientation - surfaceRotation + 360) % 360
         }
     }
 
