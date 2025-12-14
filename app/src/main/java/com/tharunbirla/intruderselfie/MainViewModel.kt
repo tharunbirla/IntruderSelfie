@@ -194,21 +194,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun deleteSelectedPhotos() {
         viewModelScope.launch {
             if (_selectedPhotos.value.isEmpty()) return@launch
-
-            val urisToDelete = _selectedPhotos.value.toList()
+            deletePhotos(_selectedPhotos.value.toList())
             _selectedPhotos.value = emptySet()
+        }
+    }
 
-            withContext(Dispatchers.IO) {
-                urisToDelete.forEach { uri ->
-                    try {
-                        context.contentResolver.delete(uri, null, null)
-                    } catch (e: Exception) {
-                        Log.e("MainViewModel", "Error deleting photo: $uri", e)
-                    }
+    fun deleteSinglePhoto(uri: Uri) {
+        viewModelScope.launch {
+            deletePhotos(listOf(uri))
+            // If the deleted photo was the one being previewed, close the preview
+            if (_previewPhotoUri.value == uri) {
+                _previewPhotoUri.value = null
+            }
+        }
+    }
+
+    private suspend fun deletePhotos(uris: List<Uri>) {
+        withContext(Dispatchers.IO) {
+            uris.forEach { uri ->
+                try {
+                    context.contentResolver.delete(uri, null, null)
+                } catch (e: Exception) {
+                    Log.e("MainViewModel", "Error deleting photo: $uri", e)
                 }
             }
-            loadCapturedPhotos()
         }
+        loadCapturedPhotos()
     }
 
     fun setPreviewPhoto(uri: Uri?) {
