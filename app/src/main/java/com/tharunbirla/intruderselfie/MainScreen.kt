@@ -14,10 +14,12 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -220,8 +222,14 @@ fun MainScreen(viewModel: MainViewModel) {
 
         // Full-screen image preview dialog
         previewPhotoUri?.let { uri ->
-            PhotoPreviewDialog(uri = uri) {
-                viewModel.setPreviewPhoto(null)
+            // Find the photo object to get details
+            val photo = capturedPhotos.find { it.uri == uri }
+            if (photo != null) {
+                PhotoPreviewDialog(
+                    photo = photo,
+                    onDismiss = { viewModel.setPreviewPhoto(null) },
+                    onDelete = { viewModel.deleteSinglePhoto(uri) }
+                )
             }
         }
     }
@@ -305,45 +313,82 @@ fun PhotoItem(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PhotoPreviewDialog(uri: Uri, onDismiss: () -> Unit) {
+fun PhotoPreviewDialog(
+    photo: CapturedPhoto,
+    onDismiss: () -> Unit,
+    onDelete: () -> Unit
+) {
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = Color.Black
-        ) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                Image(
-                    painter = rememberAsyncImagePainter(uri),
-                    contentDescription = null,
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.fillMaxSize()
-                )
-                // Dismiss button
-                IconButton(
-                    onClick = onDismiss,
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(16.dp)
-                        .background(
-                            Color.Black.copy(alpha = 0.5f),
-                            MaterialTheme.shapes.medium
-                        )
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Close,
-                        contentDescription = "Close preview",
-                        tint = Color.White
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = { },
+                    navigationIcon = {
+                        IconButton(onClick = onDismiss) {
+                            Icon(
+                                imageVector = Icons.Default.ArrowBack,
+                                contentDescription = "Back",
+                                tint = Color.White
+                            )
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = onDelete) {
+                            Icon(
+                                imageVector = Icons.Default.Delete,
+                                contentDescription = "Delete",
+                                tint = Color.White
+                            )
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = Color.Black.copy(alpha = 0.4f)
                     )
+                )
+            },
+            containerColor = Color.Black,
+            content = { padding ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(padding),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Image(
+                        painter = rememberAsyncImagePainter(photo.uri),
+                        contentDescription = "Full screen preview",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize()
+                    )
+
+                    // Bottom Info Bar
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .background(Color.Black.copy(alpha = 0.6f))
+                            .padding(16.dp)
+                    ) {
+                        Text(
+                            text = SimpleDateFormat("EEEE, MMM d, yyyy", Locale.getDefault()).format(Date(photo.timestamp)),
+                            style = MaterialTheme.typography.titleMedium,
+                            color = Color.White
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(photo.timestamp)),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color.White.copy(alpha = 0.7f)
+                        )
+                    }
                 }
             }
-        }
+        )
     }
 }
 

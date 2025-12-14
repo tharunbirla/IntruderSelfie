@@ -10,9 +10,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA"/>
 
+    <!-- READ_EXTERNAL_STORAGE is only needed for API <= 32.
+         For our own app's files on API 29+, we don't strictly need it, but useful for broad access on older OS.
+         We stop asking for WRITE on API 28 (Android 9) because Scoped Storage (API 29) handles it. -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
-    <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION"/>
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
 
     <application
         android:requestLegacyExternalStorage="true" android:allowBackup="true"
