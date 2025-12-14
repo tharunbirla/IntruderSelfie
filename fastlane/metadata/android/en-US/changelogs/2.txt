@@ -1,0 +1,6 @@
+* Fixed crash on startup (Android 14+ permissions).
+* Solved "dark photo" issue with improved camera auto-exposure logic.
+* New Setup Wizard for easier permission onboarding.
+* Enhanced Full-Screen Image Viewer with details and delete option.
+* UI polish and performance improvements.
+* Removed unnecessary storage permissions for Android 10+.
