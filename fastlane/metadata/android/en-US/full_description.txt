@@ -5,14 +5,16 @@ IntruderSelfie silently snaps a front-camera photo <b>every time the screen is u
 * Runs as a **lightweight foreground service** after device boot – no need to keep the app open.
 * Works **offline** – no internet, ads, or third-party libraries.
 * Uses only the minimum Android permissions: Camera for photos, Foreground-Service to stay alive, Boot-Completed to start after reboot, and Storage to save images locally.
-* Compatible with Android 8 → 14 (API 26-35).
+* Compatible with Android 8 → 15 (API 26-35).
+* **Modern Material 3 Design** with a clean, Google-like UI.
 
 <b>How it works</b>
 
-1. Install, grant Camera & Notification permissions once.
+1. Open the app and follow the simple **Setup Wizard** to grant Camera & Notification permissions.
 2. A persistent notification “Watching for unlocks…” appears; you can minimise the app.
-3. Each unlock triggers a silent photo saved to the app.
-4. Photos remain on-device only; no cloud, no data sharing.
+3. Each unlock triggers a silent photo saved to the app's secure gallery.
+4. View photos in the new **Full-Screen Viewer** with details or delete them instantly.
+5. Photos remain on-device only; no cloud, no data sharing.
 
 <b>Privacy & Security</b>
 
