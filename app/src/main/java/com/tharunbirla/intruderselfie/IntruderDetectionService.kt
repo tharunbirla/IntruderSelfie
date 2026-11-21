@@ -41,7 +41,7 @@ class IntruderDetectionService : Service() {
     private var isReadyToCapture = false
     private var captureInProgress = false
     private val pendingCaptureIds = ArrayDeque<Long>()
-    private val processedIds = LinkedHashSet<Long>()
+    private var lastQueuedEventId = 0L
     private var activeSession: CameraCaptureSession? = null
 
     override fun onCreate() {
@@ -53,7 +53,8 @@ class IntruderDetectionService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_CAPTURE_FAILED_ATTEMPT) {
             val eventId = intent.getLongExtra(EXTRA_EVENT_ID, -1L)
-            if (eventId > 0L && processedIds.add(eventId)) {
+            if (eventId > lastQueuedEventId) {
+                lastQueuedEventId = eventId
                 pendingCaptureIds.addLast(eventId)
                 Log.i(TAG, "Queued failed credential attempt id=$eventId")
                 captureNextIfIdle()
