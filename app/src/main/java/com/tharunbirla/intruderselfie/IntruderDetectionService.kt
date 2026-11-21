@@ -1,6 +1,10 @@
 package com.tharunbirla.intruderselfie
 
-import android.app.*
+import android.Manifest
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.Service
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
@@ -8,7 +12,11 @@ import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.ImageFormat
 import android.hardware.camera2.*
+import android.media.AudioAttributes
+import android.media.MediaPlayer
 import android.media.ImageReader
+import android.media.RingtoneManager
+import android.net.Uri
 import android.os.*
 import android.provider.MediaStore
 import android.util.Log
@@ -18,11 +26,10 @@ import java.io.File
 import java.io.OutputStream
 import java.text.SimpleDateFormat
 import java.util.*
-import android.Manifest
 
 /**
- * Long-lived foreground service. It does not react to successful unlocks.
- * A failed credential callback explicitly requests exactly one capture.
+ * Foreground service for local failed-attempt photos and the optional security alarm.
+ * The alarm/torch is only started after the configured consecutive-failure threshold.
  */
 class IntruderDetectionService : Service() {
 
@@ -32,6 +39,10 @@ class IntruderDetectionService : Service() {
         private const val CHANNEL_ID = "INTRUDER_CHANNEL"
         const val ACTION_CAPTURE_FAILED_ATTEMPT =
             "com.tharunbirla.intruderselfie.CAPTURE_FAILED_ATTEMPT"
+        const val ACTION_START_ALARM =
+            "com.tharunbirla.intruderselfie.START_SECURITY_ALARM"
+        const val ACTION_STOP_ALARM =
+            "com.tharunbirla.intruderselfie.STOP_SECURITY_ALARM"
         const val EXTRA_EVENT_ID = "failed_attempt_event_id"
     }
 
@@ -44,6 +55,21 @@ class IntruderDetectionService : Service() {
     private val pendingCaptureIds = ArrayDeque<Long>()
     private var lastQueuedEventId = 0L
     private var activeSession: CameraCaptureSession? = null
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var mediaPlayer: MediaPlayer? = null
+    private var torchCameraId: String? = null
+    private var torchIsOn = false
+
+    private val stopAlarmRunnable = Runnable { stopSecurityAlarm() }
+    private val torchBlinkRunnable = object : Runnable {
+        override fun run() {
+            toggleTorch()
+            val prefs = getSharedPreferences(AppConstants.PREFS_NAME, Context.MODE_PRIVATE)
+            val interval = prefs.getInt(AppConstants.KEY_TORCH_INTERVAL_MS, 1200).coerceIn(1000, 2000)
+            mainHandler.postDelayed(this, interval.toLong())
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -62,17 +88,21 @@ class IntruderDetectionService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_CAPTURE_FAILED_ATTEMPT) {
-            val eventId = intent.getLongExtra(EXTRA_EVENT_ID, -1L)
-            ensureBackgroundThread()
-            backgroundHandler?.post {
-                if (eventId > lastQueuedEventId) {
-                    lastQueuedEventId = eventId
-                    pendingCaptureIds.addLast(eventId)
-                    Log.i(TAG, "Queued failed credential attempt id=$eventId")
-                    captureNextIfIdle()
+        when (intent?.action) {
+            ACTION_CAPTURE_FAILED_ATTEMPT -> {
+                val eventId = intent.getLongExtra(EXTRA_EVENT_ID, -1L)
+                ensureBackgroundThread()
+                backgroundHandler?.post {
+                    if (eventId > lastQueuedEventId) {
+                        lastQueuedEventId = eventId
+                        pendingCaptureIds.addLast(eventId)
+                        Log.i(TAG, "Queued failed credential attempt id=$eventId")
+                        captureNextIfIdle()
+                    }
                 }
             }
+            ACTION_START_ALARM -> startSecurityAlarm()
+            ACTION_STOP_ALARM -> stopSecurityAlarm()
         }
         return START_STICKY
     }
@@ -93,9 +123,10 @@ class IntruderDetectionService : Service() {
     private fun buildNotification(): Notification =
         NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_camera)
-            .setContentTitle("Intruder Selfie Active")
+            .setContentTitle("SACHIN • Intruder Selfie")
             .setContentText("Monitoring failed screen-lock credential attempts")
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOngoing(true)
             .build()
 
     private fun ensureBackgroundThread() {
@@ -103,6 +134,108 @@ class IntruderDetectionService : Service() {
             backgroundThread = HandlerThread("CameraBg").apply { start() }
             backgroundHandler = Handler(backgroundThread!!.looper)
         }
+    }
+
+    // Alert playback is isolated from the camera queue and automatically times out.
+    private fun startSecurityAlarm() {
+        stopSecurityAlarm()
+        val prefs = getSharedPreferences(AppConstants.PREFS_NAME, Context.MODE_PRIVATE)
+
+        if (prefs.getBoolean(AppConstants.KEY_ALARM_SOUND_ENABLED, true)) {
+            val volume = prefs.getInt(AppConstants.KEY_ALARM_VOLUME, 80).coerceIn(0, 100) / 100f
+            val customUri = prefs.getString(AppConstants.KEY_RINGTONE_URI, null)?.let(Uri::parse)
+            val defaultUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+            val started = customUri?.let { startTone(it, volume) } ?: false
+            if (!started && defaultUri != null) startTone(defaultUri, volume)
+        }
+
+        if (prefs.getBoolean(AppConstants.KEY_TORCH_ENABLED, false)) {
+            // Give the front-camera still capture time to finish before requesting the rear flash.
+            mainHandler.postDelayed(torchBlinkRunnable, 2500L)
+        }
+
+        val duration = prefs.getInt(AppConstants.KEY_ALARM_DURATION_SECONDS, 30).coerceIn(10, 60)
+        mainHandler.postDelayed(stopAlarmRunnable, duration * 1000L)
+    }
+
+    private fun startTone(uri: Uri, volume: Float): Boolean {
+        val player = MediaPlayer()
+        return try {
+            player.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ALARM)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+            )
+            player.setDataSource(this, uri)
+            player.isLooping = true
+            player.setVolume(volume, volume)
+            player.prepare()
+            player.start()
+            mediaPlayer = player
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not play selected alarm tone", e)
+            try { player.release() } catch (_: Exception) {}
+            false
+        }
+    }
+
+    private fun findFlashCameraId(): String? {
+        val manager = getSystemService(CameraManager::class.java)
+        return try {
+            manager.cameraIdList.firstOrNull { id ->
+                val characteristics = manager.getCameraCharacteristics(id)
+                characteristics.get(CameraCharacteristics.LENS_FACING) ==
+                    CameraCharacteristics.LENS_FACING_BACK &&
+                    characteristics.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Unable to find rear flash", e)
+            null
+        }
+    }
+
+    private fun toggleTorch() {
+        val cameraId = torchCameraId ?: findFlashCameraId()?.also { torchCameraId = it } ?: run {
+            Log.w(TAG, "No rear camera flash available")
+            mainHandler.removeCallbacks(torchBlinkRunnable)
+            return
+        }
+        val nextState = !torchIsOn
+        try {
+            getSystemService(CameraManager::class.java).setTorchMode(cameraId, nextState)
+            torchIsOn = nextState
+        } catch (e: Exception) {
+            // A device may temporarily reserve the camera for the front-facing photo.
+            Log.w(TAG, "Torch change failed; will retry on next blink", e)
+            torchIsOn = false
+        }
+    }
+
+    private fun stopSecurityAlarm() {
+        mainHandler.removeCallbacks(stopAlarmRunnable)
+        mainHandler.removeCallbacks(torchBlinkRunnable)
+
+        try {
+            mediaPlayer?.let { player ->
+                if (player.isPlaying) player.stop()
+                player.release()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error stopping alarm playback", e)
+        } finally {
+            mediaPlayer = null
+        }
+
+        if (torchIsOn && torchCameraId != null) {
+            try {
+                getSystemService(CameraManager::class.java).setTorchMode(torchCameraId!!, false)
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not switch off torch", e)
+            }
+        }
+        torchIsOn = false
     }
 
     // All capture-queue state is accessed only on the camera background thread.
@@ -253,7 +386,6 @@ class IntruderDetectionService : Service() {
             result: TotalCaptureResult
         ) {
             Log.d(TAG, "Capture completed")
-            // ImageReader delivers and saves exactly one still JPEG.
         }
 
         override fun onCaptureFailed(
@@ -298,7 +430,7 @@ class IntruderDetectionService : Service() {
             }
         }
 
-        var uri: android.net.Uri? = null
+        var uri: Uri? = null
         var stream: OutputStream? = null
         try {
             uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
@@ -339,13 +471,12 @@ class IntruderDetectionService : Service() {
         imageReader = null
         captureInProgress = false
 
-        if (pendingCaptureIds.isNotEmpty()) {
-            pendingCaptureIds.removeFirst()
-        }
+        if (pendingCaptureIds.isNotEmpty()) pendingCaptureIds.removeFirst()
         captureNextIfIdle()
     }
 
     override fun onDestroy() {
+        stopSecurityAlarm()
         activeSession?.close()
         cameraDevice?.close()
         imageReader?.close()
