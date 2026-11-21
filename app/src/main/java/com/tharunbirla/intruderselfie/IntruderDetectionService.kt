@@ -31,7 +31,7 @@ class IntruderDetectionService : Service() {
         private const val CHANNEL_ID = "INTRUDER_CHANNEL"
         const val ACTION_CAPTURE_FAILED_ATTEMPT =
             "com.tharunbirla.intruderselfie.CAPTURE_FAILED_ATTEMPT"
-        private const val EXTRA_EVENT_ID = "failed_attempt_event_id"
+        const val EXTRA_EVENT_ID = "failed_attempt_event_id"
     }
 
     private var cameraDevice: CameraDevice? = null
@@ -250,12 +250,9 @@ class IntruderDetectionService : Service() {
 
     private fun getJpegOrientation(characteristics: CameraCharacteristics): Int {
         val sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
-        val rotation = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            display?.rotation ?: android.view.Surface.ROTATION_0
-        } else {
-            @Suppress("DEPRECATION")
-            (getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager).defaultDisplay.rotation
-        }
+        @Suppress("DEPRECATION")
+        val rotation = (getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager)
+            .defaultDisplay.rotation
         val degrees = when (rotation) {
             android.view.Surface.ROTATION_90 -> 90
             android.view.Surface.ROTATION_180 -> 180
