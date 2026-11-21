@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">Intruder Selfie</string>
+    <string name="device_admin_description">Allows Intruder Selfie to receive failed device PIN, password, or pattern callbacks. One photo is stored locally for each failed attempt.</string>
 </resources>
