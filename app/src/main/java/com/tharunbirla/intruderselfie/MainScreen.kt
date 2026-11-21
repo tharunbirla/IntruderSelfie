@@ -1,5 +1,7 @@
 package com.tharunbirla.intruderselfie
 
+import android.app.admin.DevicePolicyManager
+import android.content.Intent
 import android.net.Uri
 import android.text.format.DateUtils
 import androidx.compose.animation.AnimatedVisibility
@@ -22,6 +24,9 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -31,6 +36,10 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -49,6 +58,21 @@ fun MainScreen(viewModel: MainViewModel) {
     val capturedPhotos by viewModel.capturedPhotos.collectAsState()
     val selectedPhotos by viewModel.selectedPhotos.collectAsState()
     val previewPhotoUri by viewModel.previewPhotoUri.collectAsState()
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var isDeviceAdminActive by remember {
+        mutableStateOf(FailedAttemptAdminReceiver.isActive(context))
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                isDeviceAdminActive = FailedAttemptAdminReceiver.isActive(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     Scaffold(
         topBar = {
@@ -144,6 +168,62 @@ fun MainScreen(viewModel: MainViewModel) {
                             checkedThumbColor = MaterialTheme.colorScheme.primary,
                             checkedTrackColor = MaterialTheme.colorScheme.primaryContainer
                         )
+                    )
+                }
+            }
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "Failed-attempt monitoring",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Text(
+                        text = if (isDeviceAdminActive) {
+                            "Device Administrator is enabled. Each failed PIN, password, or pattern attempt can trigger one local photo."
+                        } else {
+                            "Enable Device Administrator to receive failed PIN, password, or pattern callbacks. Successful unlocks never trigger a photo."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (isDeviceAdminActive) {
+                        Text(
+                            text = "Device Administrator enabled",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    } else {
+                        Button(
+                            onClick = {
+                                val adminIntent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
+                                    putExtra(
+                                        DevicePolicyManager.EXTRA_DEVICE_ADMIN,
+                                        FailedAttemptAdminReceiver.component(context)
+                                    )
+                                    putExtra(
+                                        DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                                        "Allows Intruder Selfie to detect failed device PIN, password, or pattern attempts. One photo is stored locally for each failure."
+                                    )
+                                }
+                                context.startActivity(adminIntent)
+                            }
+                        ) {
+                            Text("Enable Device Administrator")
+                        }
+                    }
+                    Text(
+                        text = "Biometric failures (fingerprint/face) are not reliably reported to ordinary apps. Reopen the app after restarting the phone to resume camera monitoring.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
