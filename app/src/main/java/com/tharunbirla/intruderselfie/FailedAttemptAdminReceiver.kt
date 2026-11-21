@@ -6,6 +6,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.os.SystemClock
+import android.os.UserHandle
 import android.util.Log
 import androidx.core.content.ContextCompat
 
@@ -14,23 +15,27 @@ import androidx.core.content.ContextCompat
  * activates this app as a device administrator.
  */
 class FailedAttemptAdminReceiver : DeviceAdminReceiver() {
-    override fun onPasswordFailed(context: Context, intent: Intent) {
-        super.onPasswordFailed(context, intent)
+    override fun onPasswordFailed(context: Context, intent: Intent, user: UserHandle) {
+        super.onPasswordFailed(context, intent, user)
+
         val prefs = context.getSharedPreferences(AppConstants.PREFS_NAME, Context.MODE_PRIVATE)
         if (!prefs.getBoolean(AppConstants.KEY_APP_ENABLED, true)) return
 
-        // Android invokes this callback for failed device credentials. The
-        // requirement is one saved image per callback, with no unlock callback.
+        // Monotonic ID keeps separate failures separate, even within the same second.
         val eventId = SystemClock.elapsedRealtimeNanos()
         val captureIntent = Intent(context, IntruderDetectionService::class.java).apply {
             action = IntruderDetectionService.ACTION_CAPTURE_FAILED_ATTEMPT
             putExtra("failed_attempt_event_id", eventId)
         }
+
         try {
+            // The camera foreground service should already be running, having been
+            // started while the app was visible. Android may reject a cold camera-FGS
+            // start from this background callback on modern Android versions.
             ContextCompat.startForegroundService(context, captureIntent)
             Log.i("FailedAttemptAdmin", "Queued failed attempt $eventId")
         } catch (e: Exception) {
-            Log.e("FailedAttemptAdmin", "Unable to start capture service", e)
+            Log.e("FailedAttemptAdmin", "Unable to queue photo capture", e)
         }
     }
 
