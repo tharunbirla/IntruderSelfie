@@ -5,6 +5,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.graphics.ImageFormat
 import android.hardware.camera2.*
 import android.media.ImageReader
@@ -47,7 +48,16 @@ class IntruderDetectionService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        startForeground(NOTIF_ID, buildNotification())
+        val notification = buildNotification()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIF_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+            )
+        } else {
+            startForeground(NOTIF_ID, notification)
+        }
         ensureBackgroundThread()
     }
 
