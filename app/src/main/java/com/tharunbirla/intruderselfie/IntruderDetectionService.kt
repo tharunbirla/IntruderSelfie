@@ -48,16 +48,20 @@ class IntruderDetectionService : Service() {
         super.onCreate()
         createNotificationChannel()
         startForeground(NOTIF_ID, buildNotification())
+        ensureBackgroundThread()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_CAPTURE_FAILED_ATTEMPT) {
             val eventId = intent.getLongExtra(EXTRA_EVENT_ID, -1L)
-            if (eventId > lastQueuedEventId) {
-                lastQueuedEventId = eventId
-                pendingCaptureIds.addLast(eventId)
-                Log.i(TAG, "Queued failed credential attempt id=$eventId")
-                captureNextIfIdle()
+            ensureBackgroundThread()
+            backgroundHandler?.post {
+                if (eventId > lastQueuedEventId) {
+                    lastQueuedEventId = eventId
+                    pendingCaptureIds.addLast(eventId)
+                    Log.i(TAG, "Queued failed credential attempt id=$eventId")
+                    captureNextIfIdle()
+                }
             }
         }
         return START_STICKY
@@ -84,13 +88,17 @@ class IntruderDetectionService : Service() {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
 
-    private fun captureNextIfIdle() {
-        if (captureInProgress || pendingCaptureIds.isEmpty()) return
-        captureInProgress = true
+    private fun ensureBackgroundThread() {
         if (backgroundThread == null || !backgroundThread!!.isAlive) {
             backgroundThread = HandlerThread("CameraBg").apply { start() }
             backgroundHandler = Handler(backgroundThread!!.looper)
         }
+    }
+
+    // All capture-queue state is accessed only on the camera background thread.
+    private fun captureNextIfIdle() {
+        if (captureInProgress || pendingCaptureIds.isEmpty()) return
+        captureInProgress = true
         openFrontCamera()
     }
 
@@ -306,6 +314,12 @@ class IntruderDetectionService : Service() {
     }
 
     private fun finishCurrentCapture() {
+        val handler = backgroundHandler
+        if (handler != null && Looper.myLooper() != handler.looper) {
+            handler.post { finishCurrentCapture() }
+            return
+        }
+
         isReadyToCapture = false
         activeSession?.close()
         activeSession = null
@@ -314,10 +328,11 @@ class IntruderDetectionService : Service() {
         imageReader?.close()
         imageReader = null
         captureInProgress = false
-        backgroundHandler?.post {
-            if (pendingCaptureIds.isNotEmpty()) pendingCaptureIds.removeFirst()
-            captureNextIfIdle()
+
+        if (pendingCaptureIds.isNotEmpty()) {
+            pendingCaptureIds.removeFirst()
         }
+        captureNextIfIdle()
     }
 
     override fun onDestroy() {
