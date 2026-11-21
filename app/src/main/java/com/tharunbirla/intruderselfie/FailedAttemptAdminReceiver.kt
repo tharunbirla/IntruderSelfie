@@ -25,7 +25,7 @@ class FailedAttemptAdminReceiver : DeviceAdminReceiver() {
         val eventId = SystemClock.elapsedRealtimeNanos()
         val captureIntent = Intent(context, IntruderDetectionService::class.java).apply {
             action = IntruderDetectionService.ACTION_CAPTURE_FAILED_ATTEMPT
-            putExtra("failed_attempt_event_id", eventId)
+            putExtra(IntruderDetectionService.EXTRA_EVENT_ID, eventId)
         }
 
         try {
