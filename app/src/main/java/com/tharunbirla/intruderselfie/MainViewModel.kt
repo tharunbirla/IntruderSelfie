@@ -3,6 +3,7 @@ package com.tharunbirla.intruderselfie
 import android.Manifest
 import android.app.Application
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.database.ContentObserver
 import android.net.Uri
@@ -23,6 +24,17 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
+data class AlertSettings(
+    val threshold: Int = 3,
+    val soundEnabled: Boolean = true,
+    val volume: Int = 80,
+    val ringtoneUri: String? = null,
+    val ringtoneTitle: String = "System alarm",
+    val torchEnabled: Boolean = false,
+    val blinkIntervalMs: Int = 1200,
+    val durationSeconds: Int = 30
+)
+
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val context: Context
@@ -30,77 +42,113 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val prefs = context.getSharedPreferences(AppConstants.PREFS_NAME, Context.MODE_PRIVATE)
 
-    // StateFlow to observe the app's enabled/disabled status
     private val _appEnabled = MutableStateFlow(prefs.getBoolean(AppConstants.KEY_APP_ENABLED, true))
     val appEnabled: StateFlow<Boolean> = _appEnabled.asStateFlow()
 
-    // StateFlow to track if setup is completed
     private val _isSetupCompleted = MutableStateFlow(prefs.getBoolean("setup_completed", false))
     val isSetupCompleted: StateFlow<Boolean> = _isSetupCompleted.asStateFlow()
 
-    // StateFlow to hold the list of captured photos
     private val _capturedPhotos = MutableStateFlow<List<CapturedPhoto>>(emptyList())
     val capturedPhotos: StateFlow<List<CapturedPhoto>> = _capturedPhotos.asStateFlow()
 
-    // StateFlow to hold the URIs of currently selected photos for deletion
     private val _selectedPhotos = MutableStateFlow<Set<Uri>>(emptySet())
     val selectedPhotos: StateFlow<Set<Uri>> = _selectedPhotos.asStateFlow()
 
-    // StateFlow to hold the URI of the photo currently being previewed in full screen
     private val _previewPhotoUri = MutableStateFlow<Uri?>(null)
     val previewPhotoUri: StateFlow<Uri?> = _previewPhotoUri.asStateFlow()
 
-    // ContentObserver to listen for changes in MediaStore
+    private val _alertSettings = MutableStateFlow(readAlertSettings())
+    val alertSettings: StateFlow<AlertSettings> = _alertSettings.asStateFlow()
+
     private val contentObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
         override fun onChange(selfChange: Boolean, uri: Uri?) {
             super.onChange(selfChange, uri)
-            // Simplified logic: Reload on ANY change to external content URI.
-            // This ensures we catch the 'IS_PENDING' flip or insertion even if path matching is flaky.
-            // We rely on loadCapturedPhotos to filter by directory anyway.
-            Log.d("MainViewModel", "ContentObserver onChange: $uri")
             loadCapturedPhotos()
         }
     }
 
     init {
-        // Register the content observer when the ViewModel is created
         context.contentResolver.registerContentObserver(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-            true, // notifyForDescendants
+            true,
             contentObserver
         )
-
-        // Load photos immediately
         loadCapturedPhotos()
-
-        // Check service state
         checkServiceState()
+    }
+
+    private fun readAlertSettings(): AlertSettings = AlertSettings(
+        threshold = prefs.getInt(AppConstants.KEY_ALERT_THRESHOLD, 3).coerceIn(2, 5),
+        soundEnabled = prefs.getBoolean(AppConstants.KEY_ALARM_SOUND_ENABLED, true),
+        volume = prefs.getInt(AppConstants.KEY_ALARM_VOLUME, 80).coerceIn(0, 100),
+        ringtoneUri = prefs.getString(AppConstants.KEY_RINGTONE_URI, null),
+        ringtoneTitle = prefs.getString(AppConstants.KEY_RINGTONE_TITLE, "System alarm") ?: "System alarm",
+        torchEnabled = prefs.getBoolean(AppConstants.KEY_TORCH_ENABLED, false),
+        blinkIntervalMs = prefs.getInt(AppConstants.KEY_TORCH_INTERVAL_MS, 1200).coerceIn(1000, 2000),
+        durationSeconds = prefs.getInt(AppConstants.KEY_ALARM_DURATION_SECONDS, 30).coerceIn(10, 60)
+    )
+
+    private fun saveAlertSettings(settings: AlertSettings) {
+        _alertSettings.value = settings
+        prefs.edit()
+            .putInt(AppConstants.KEY_ALERT_THRESHOLD, settings.threshold)
+            .putBoolean(AppConstants.KEY_ALARM_SOUND_ENABLED, settings.soundEnabled)
+            .putInt(AppConstants.KEY_ALARM_VOLUME, settings.volume)
+            .putString(AppConstants.KEY_RINGTONE_URI, settings.ringtoneUri)
+            .putString(AppConstants.KEY_RINGTONE_TITLE, settings.ringtoneTitle)
+            .putBoolean(AppConstants.KEY_TORCH_ENABLED, settings.torchEnabled)
+            .putInt(AppConstants.KEY_TORCH_INTERVAL_MS, settings.blinkIntervalMs)
+            .putInt(AppConstants.KEY_ALARM_DURATION_SECONDS, settings.durationSeconds)
+            .apply()
+    }
+
+    fun setAlertThreshold(value: Int) =
+        saveAlertSettings(_alertSettings.value.copy(threshold = value.coerceIn(2, 5)))
+
+    fun setAlarmSoundEnabled(enabled: Boolean) =
+        saveAlertSettings(_alertSettings.value.copy(soundEnabled = enabled))
+
+    fun setAlarmVolume(value: Int) =
+        saveAlertSettings(_alertSettings.value.copy(volume = value.coerceIn(0, 100)))
+
+    fun setRingtone(uri: String?, title: String) =
+        saveAlertSettings(_alertSettings.value.copy(ringtoneUri = uri, ringtoneTitle = title))
+
+    fun setTorchEnabled(enabled: Boolean) =
+        saveAlertSettings(_alertSettings.value.copy(torchEnabled = enabled))
+
+    fun setBlinkInterval(value: Int) =
+        saveAlertSettings(_alertSettings.value.copy(blinkIntervalMs = value.coerceIn(1000, 2000)))
+
+    fun setAlarmDuration(value: Int) =
+        saveAlertSettings(_alertSettings.value.copy(durationSeconds = value.coerceIn(10, 60)))
+
+    fun testAlert() {
+        val intent = Intent(context, IntruderDetectionService::class.java).apply {
+            action = IntruderDetectionService.ACTION_START_ALARM
+        }
+        try {
+            ContextCompat.startForegroundService(context, intent)
+        } catch (e: Exception) {
+            Log.e("MainViewModel", "Unable to test security alert", e)
+        }
     }
 
     fun completeSetup() {
         _isSetupCompleted.value = true
         prefs.edit().putBoolean("setup_completed", true).apply()
-        // Try starting service now that setup is done (likely permissions granted)
         checkServiceState()
     }
 
-    /**
-     * Checks if the service should be running based on 'enabled' state AND permissions.
-     */
     fun checkServiceState() {
-        // Only start if setup is completed OR if we just want to enforce logic
-        // But strictly, we need permissions.
         if (_appEnabled.value) {
             val cameraPermission = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
             if (cameraPermission == PackageManager.PERMISSION_GRANTED) {
-                Log.d("MainViewModel", "App enabled and permissions granted. Starting service.")
                 IntruderDetection.start(context)
             } else {
-                Log.d("MainViewModel", "App enabled but Camera permission missing. Not starting service.")
                 IntruderDetection.stop(context)
             }
         } else {
-            Log.d("MainViewModel", "App disabled. Stopping service.")
             IntruderDetection.stop(context)
         }
     }
@@ -108,6 +156,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun toggleAppEnabled(enabled: Boolean) {
         _appEnabled.value = enabled
         prefs.edit().putBoolean(AppConstants.KEY_APP_ENABLED, enabled).apply()
+        if (!enabled) {
+            prefs.edit()
+                .putInt(AppConstants.KEY_FAILED_STREAK, 0)
+                .putBoolean(AppConstants.KEY_ALARM_TRIGGERED, false)
+                .apply()
+        }
         checkServiceState()
     }
 
@@ -115,56 +169,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val photoList = withContext(Dispatchers.IO) {
                 val images = mutableListOf<CapturedPhoto>()
-
                 val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
                 } else {
                     MediaStore.Images.Media.EXTERNAL_CONTENT_URI
                 }
-
                 val projection = arrayOf(
                     MediaStore.Images.Media._ID,
                     MediaStore.Images.Media.DISPLAY_NAME,
                     MediaStore.Images.Media.DATE_ADDED,
                     MediaStore.Images.Media.DATE_TAKEN
                 )
-
-                // For Android 10+, use RELATIVE_PATH
                 val selection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?"
                 } else {
                     "${MediaStore.Images.Media.DATA} LIKE ?"
                 }
-
-                // Important: Ensure trailing slash for RELATIVE_PATH matching to be safe
                 val targetDir = Environment.DIRECTORY_PICTURES + File.separator + "IntruderSelfie"
                 val selectionArgs = arrayOf("$targetDir%")
-
                 val sortOrder = "${MediaStore.Images.Media.DATE_ADDED} DESC"
 
                 try {
                     context.contentResolver.query(
-                        collection,
-                        projection,
-                        selection,
-                        selectionArgs,
-                        sortOrder
+                        collection, projection, selection, selectionArgs, sortOrder
                     )?.use { cursor ->
                         val idColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
                         val dateAddedColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_ADDED)
                         val dateTakenColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_TAKEN)
-
                         while (cursor.moveToNext()) {
                             val id = cursor.getLong(idColumn)
                             val contentUri = Uri.withAppendedPath(
-                                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                                id.toString()
+                                MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id.toString()
                             )
                             val dateAdded = cursor.getLong(dateAddedColumn) * 1000
                             val dateTaken = cursor.getLong(dateTakenColumn)
-                            val finalTimestamp = if (dateTaken > 0) dateTaken else dateAdded
-
-                            images.add(CapturedPhoto(uri = contentUri, timestamp = finalTimestamp))
+                            images.add(
+                                CapturedPhoto(
+                                    uri = contentUri,
+                                    timestamp = if (dateTaken > 0) dateTaken else dateAdded
+                                )
+                            )
                         }
                     }
                 } catch (e: Exception) {
@@ -173,8 +217,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 images
             }
             _capturedPhotos.value = photoList
-            _selectedPhotos.value = _selectedPhotos.value.filter { uri ->
-                photoList.any { it.uri == uri }
+            _selectedPhotos.value = _selectedPhotos.value.filter { selected ->
+                photoList.any { it.uri == selected }
             }.toSet()
         }
     }
@@ -202,10 +246,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun deleteSinglePhoto(uri: Uri) {
         viewModelScope.launch {
             deletePhotos(listOf(uri))
-            // If the deleted photo was the one being previewed, close the preview
-            if (_previewPhotoUri.value == uri) {
-                _previewPhotoUri.value = null
-            }
+            if (_previewPhotoUri.value == uri) _previewPhotoUri.value = null
         }
     }
 

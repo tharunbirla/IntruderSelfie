@@ -1,3 +1,4 @@
 <resources>
-    <string name="app_name">Intruder Selfie</string>
+    <string name="app_name">SACHIN • Intruder Selfie</string>
+    <string name="device_admin_description">Allows this app to receive failed device PIN, password, or pattern callbacks. One photo is stored locally for each failed attempt. The optional alarm and torch alert can be customized in the app.</string>
 </resources>

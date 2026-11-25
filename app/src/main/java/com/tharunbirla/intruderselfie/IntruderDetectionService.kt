@@ -1,15 +1,22 @@
 package com.tharunbirla.intruderselfie
 
-import android.app.*
-import android.content.BroadcastReceiver
+import android.Manifest
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.Service
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.graphics.ImageFormat
 import android.hardware.camera2.*
+import android.media.AudioAttributes
+import android.media.MediaPlayer
 import android.media.ImageReader
+import android.media.RingtoneManager
+import android.net.Uri
 import android.os.*
 import android.provider.MediaStore
 import android.util.Log
@@ -19,14 +26,10 @@ import java.io.File
 import java.io.OutputStream
 import java.text.SimpleDateFormat
 import java.util.*
-import android.Manifest
 
 /**
- * Foreground service that:
- * 1. Shows a sticky notification
- * 2. Dynamically registers a receiver for ACTION_USER_PRESENT.
- * 3. On unlock, opens the front camera, captures one still picture.
- * 4. Saves it to Pictures/IntruderSelfie (using MediaStore for modern Android).
+ * Foreground service for local failed-attempt photos and the optional security alarm.
+ * The alarm/torch is only started after the configured consecutive-failure threshold.
  */
 class IntruderDetectionService : Service() {
 
@@ -34,56 +37,78 @@ class IntruderDetectionService : Service() {
         private const val TAG = "IntruderService"
         private const val NOTIF_ID = 101
         private const val CHANNEL_ID = "INTRUDER_CHANNEL"
+        const val ACTION_CAPTURE_FAILED_ATTEMPT =
+            "com.tharunbirla.intruderselfie.CAPTURE_FAILED_ATTEMPT"
+        const val ACTION_START_ALARM =
+            "com.tharunbirla.intruderselfie.START_SECURITY_ALARM"
+        const val ACTION_STOP_ALARM =
+            "com.tharunbirla.intruderselfie.STOP_SECURITY_ALARM"
+        const val EXTRA_EVENT_ID = "failed_attempt_event_id"
     }
 
     private var cameraDevice: CameraDevice? = null
     private var backgroundHandler: Handler? = null
     private var backgroundThread: HandlerThread? = null
     private var imageReader: ImageReader? = null
-
-    // Flag to indicate when we are ready to capture the actual photo
     private var isReadyToCapture = false
+    private var captureInProgress = false
+    private val pendingCaptureIds = ArrayDeque<Long>()
+    private var lastQueuedEventId = 0L
+    private var activeSession: CameraCaptureSession? = null
 
-    // Dynamic BroadcastReceiver for ACTION_USER_PRESENT
-    private val unlockReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            if (intent.action == Intent.ACTION_USER_PRESENT) {
-                Log.d(TAG, "Device unlocked! Starting camera capture.")
-                // Prevent multiple captures if multiple unlocks happen fast
-                if (cameraDevice == null) { // Only capture if camera is not already open
-                    openFrontCamera()
-                } else {
-                    Log.d(TAG, "Camera already open, skipping capture.")
-                }
-            }
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var mediaPlayer: MediaPlayer? = null
+    private var torchCameraId: String? = null
+    private var torchIsOn = false
+
+    private val stopAlarmRunnable = Runnable { stopSecurityAlarm() }
+    private val torchBlinkRunnable = object : Runnable {
+        override fun run() {
+            toggleTorch()
+            val prefs = getSharedPreferences(AppConstants.PREFS_NAME, Context.MODE_PRIVATE)
+            val interval = prefs.getInt(AppConstants.KEY_TORCH_INTERVAL_MS, 1200).coerceIn(1000, 2000)
+            mainHandler.postDelayed(this, interval.toLong())
         }
     }
 
     override fun onCreate() {
         super.onCreate()
-        Log.d(TAG, "Service created.")
         createNotificationChannel()
-        startForeground(NOTIF_ID, buildNotification()) // required for fg-service
-
-        // Register the dynamic receiver
-        val filter = IntentFilter(Intent.ACTION_USER_PRESENT)
-        registerReceiver(unlockReceiver, filter)
-        Log.d(TAG, "Dynamically registered UnlockBroadcastReceiver.")
+        val notification = buildNotification()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIF_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+            )
+        } else {
+            startForeground(NOTIF_ID, notification)
+        }
+        ensureBackgroundThread()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        Log.d(TAG, "Service started or restarted.")
-        // The service is now running. It will wait for the unlockReceiver to trigger the camera.
-        // If it was started by MainActivity, it's already running.
-        // If it was restarted by system (due to START_STICKY), it will re-register the receiver.
-        return START_STICKY // Change to START_STICKY
+        when (intent?.action) {
+            ACTION_CAPTURE_FAILED_ATTEMPT -> {
+                val eventId = intent.getLongExtra(EXTRA_EVENT_ID, -1L)
+                ensureBackgroundThread()
+                backgroundHandler?.post {
+                    if (eventId > lastQueuedEventId) {
+                        lastQueuedEventId = eventId
+                        pendingCaptureIds.addLast(eventId)
+                        Log.i(TAG, "Queued failed credential attempt id=$eventId")
+                        captureNextIfIdle()
+                    }
+                }
+            }
+            ACTION_START_ALARM -> startSecurityAlarm()
+            ACTION_STOP_ALARM -> stopSecurityAlarm()
+        }
+        return START_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    /* -------------------------------------------------- */
-    /* Foreground notification helpers                    */
-    /* -------------------------------------------------- */
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
@@ -91,305 +116,371 @@ class IntruderDetectionService : Service() {
                 "Intruder Detection",
                 NotificationManager.IMPORTANCE_LOW
             )
-            getSystemService(NotificationManager::class.java)
-                .createNotificationChannel(channel)
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
     }
 
     private fun buildNotification(): Notification =
         NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_camera)
-            .setContentTitle("Intruder Selfie Running")
-            .setContentText("Monitoring for screen unlocks...")
+            .setContentTitle("SACHIN • Intruder Selfie")
+            .setContentText("Monitoring failed screen-lock credential attempts")
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOngoing(true)
             .build()
 
-    /* -------------------------------------------------- */
-    /* Camera plumbing                                    */
-    /* -------------------------------------------------- */
-    private fun openFrontCamera() {
-        // Ensure only one background thread
+    private fun ensureBackgroundThread() {
         if (backgroundThread == null || !backgroundThread!!.isAlive) {
             backgroundThread = HandlerThread("CameraBg").apply { start() }
             backgroundHandler = Handler(backgroundThread!!.looper)
         }
+    }
 
+    // Alert playback is isolated from the camera queue and automatically times out.
+    private fun startSecurityAlarm() {
+        stopSecurityAlarm()
+        val prefs = getSharedPreferences(AppConstants.PREFS_NAME, Context.MODE_PRIVATE)
+
+        if (prefs.getBoolean(AppConstants.KEY_ALARM_SOUND_ENABLED, true)) {
+            val volume = prefs.getInt(AppConstants.KEY_ALARM_VOLUME, 80).coerceIn(0, 100) / 100f
+            val customUri = prefs.getString(AppConstants.KEY_RINGTONE_URI, null)?.let(Uri::parse)
+            val defaultUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+            val started = customUri?.let { startTone(it, volume) } ?: false
+            if (!started && defaultUri != null) startTone(defaultUri, volume)
+        }
+
+        if (prefs.getBoolean(AppConstants.KEY_TORCH_ENABLED, false)) {
+            // Give the front-camera still capture time to finish before requesting the rear flash.
+            mainHandler.postDelayed(torchBlinkRunnable, 2500L)
+        }
+
+        val duration = prefs.getInt(AppConstants.KEY_ALARM_DURATION_SECONDS, 30).coerceIn(10, 60)
+        mainHandler.postDelayed(stopAlarmRunnable, duration * 1000L)
+    }
+
+    private fun startTone(uri: Uri, volume: Float): Boolean {
+        val player = MediaPlayer()
+        return try {
+            player.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ALARM)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+            )
+            player.setDataSource(this, uri)
+            player.isLooping = true
+            player.setVolume(volume, volume)
+            player.prepare()
+            player.start()
+            mediaPlayer = player
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not play selected alarm tone", e)
+            try { player.release() } catch (_: Exception) {}
+            false
+        }
+    }
+
+    private fun findFlashCameraId(): String? {
         val manager = getSystemService(CameraManager::class.java)
-        val cameraId = manager.cameraIdList.firstOrNull { id ->
-            manager.getCameraCharacteristics(id)
-                .get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
-        } ?: run {
-            Log.e(TAG, "No front camera found!")
-            stopCameraResources() // Only stop camera resources, not the service itself
+        return try {
+            manager.cameraIdList.firstOrNull { id ->
+                val characteristics = manager.getCameraCharacteristics(id)
+                characteristics.get(CameraCharacteristics.LENS_FACING) ==
+                    CameraCharacteristics.LENS_FACING_BACK &&
+                    characteristics.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Unable to find rear flash", e)
+            null
+        }
+    }
+
+    private fun toggleTorch() {
+        val cameraId = torchCameraId ?: findFlashCameraId()?.also { torchCameraId = it } ?: run {
+            Log.w(TAG, "No rear camera flash available")
+            mainHandler.removeCallbacks(torchBlinkRunnable)
+            return
+        }
+        val nextState = !torchIsOn
+        try {
+            getSystemService(CameraManager::class.java).setTorchMode(cameraId, nextState)
+            torchIsOn = nextState
+        } catch (e: Exception) {
+            // A device may temporarily reserve the camera for the front-facing photo.
+            Log.w(TAG, "Torch change failed; will retry on next blink", e)
+            torchIsOn = false
+        }
+    }
+
+    private fun stopSecurityAlarm() {
+        mainHandler.removeCallbacks(stopAlarmRunnable)
+        mainHandler.removeCallbacks(torchBlinkRunnable)
+
+        try {
+            mediaPlayer?.let { player ->
+                if (player.isPlaying) player.stop()
+                player.release()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error stopping alarm playback", e)
+        } finally {
+            mediaPlayer = null
+        }
+
+        if (torchIsOn && torchCameraId != null) {
+            try {
+                getSystemService(CameraManager::class.java).setTorchMode(torchCameraId!!, false)
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not switch off torch", e)
+            }
+        }
+        torchIsOn = false
+    }
+
+    // All capture-queue state is accessed only on the camera background thread.
+    private fun captureNextIfIdle() {
+        if (captureInProgress || pendingCaptureIds.isEmpty()) return
+        captureInProgress = true
+        openFrontCamera()
+    }
+
+    private fun openFrontCamera() {
+        val manager = getSystemService(CameraManager::class.java)
+        val cameraId = try {
+            manager.cameraIdList.firstOrNull { id ->
+                manager.getCameraCharacteristics(id)
+                    .get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
+            }
+        } catch (e: CameraAccessException) {
+            Log.e(TAG, "Cannot enumerate cameras", e)
+            finishCurrentCapture()
+            return
+        }
+
+        if (cameraId == null) {
+            Log.e(TAG, "No front camera found")
+            finishCurrentCapture()
+            return
+        }
+
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA) !=
+            PackageManager.PERMISSION_GRANTED) {
+            Log.e(TAG, "Camera permission missing")
+            finishCurrentCapture()
             return
         }
 
         try {
-            if (ActivityCompat.checkSelfPermission(
-                    this,
-                    Manifest.permission.CAMERA
-                ) == PackageManager.PERMISSION_GRANTED
-            ) {
-                Log.d(TAG, "Opening camera: $cameraId")
-                manager.openCamera(cameraId, stateCallback, backgroundHandler)
-            } else {
-                Log.e(TAG, "Camera permission missing for opening camera!")
-                stopCameraResources()
-            }
-        } catch (e: CameraAccessException) {
+            manager.openCamera(cameraId, stateCallback, backgroundHandler)
+        } catch (e: Exception) {
             Log.e(TAG, "Cannot open camera: ${e.message}", e)
-            stopCameraResources()
+            finishCurrentCapture()
         }
     }
 
     private val stateCallback = object : CameraDevice.StateCallback() {
         override fun onOpened(camera: CameraDevice) {
-            Log.d(TAG, "Camera opened: ${camera.id}")
             cameraDevice = camera
             createImageSession()
         }
 
         override fun onDisconnected(camera: CameraDevice) {
-            Log.w(TAG, "Camera disconnected: ${camera.id}")
             camera.close()
             cameraDevice = null
-            // Do NOT stopSelf() here immediately. Service might restart or await next unlock.
+            finishCurrentCapture()
         }
 
         override fun onError(camera: CameraDevice, error: Int) {
-            Log.e(TAG, "Camera error: $error for camera ${camera.id}")
+            Log.e(TAG, "Camera error: $error")
             camera.close()
             cameraDevice = null
-            stopCameraResources() // Stop camera resources if there's an error
+            finishCurrentCapture()
         }
     }
 
     private fun createImageSession() {
         val camera = cameraDevice ?: run {
-            Log.e(TAG, "Camera device is null in createImageSession")
-            stopCameraResources()
+            finishCurrentCapture()
             return
         }
         val manager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val characteristics = manager.getCameraCharacteristics(camera.id)
-        val largest = characteristics
+        val size = characteristics
             .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             ?.getOutputSizes(ImageFormat.JPEG)
-            ?.maxByOrNull { it.width * it.height } ?: run {
-            Log.e(TAG, "No supported JPEG output sizes.")
-            stopCameraResources()
+            ?.maxByOrNull { it.width.toLong() * it.height } ?: run {
+            finishCurrentCapture()
             return
         }
 
-        // Increase maxImages to 3 to handle preview buffering
-        imageReader = ImageReader.newInstance(
-            largest.width,
-            largest.height,
-            ImageFormat.JPEG, // Use ImageFormat from android.graphics
-            3
-        ).apply {
+        imageReader = ImageReader.newInstance(size.width, size.height, ImageFormat.JPEG, 2).apply {
             setOnImageAvailableListener({ reader ->
-                // Check if we are ready to capture
                 if (isReadyToCapture) {
-                    reader.acquireLatestImage()?.use { img ->
-                        val buffer = img.planes[0].buffer
+                    reader.acquireNextImage()?.use { image ->
+                        val buffer = image.planes[0].buffer
                         val bytes = ByteArray(buffer.remaining()).also { buffer.get(it) }
-                        savePhoto(bytes)
-                        // Reset flag
                         isReadyToCapture = false
-                    } ?: Log.e(TAG, "ImageReader acquired null image.")
+                        savePhoto(bytes)
+                    } ?: run {
+                        Log.e(TAG, "No JPEG received")
+                        finishCurrentCapture()
+                    }
                 } else {
-                    // Drain preview frames
-                    val img = reader.acquireLatestImage()
-                    img?.close()
+                    reader.acquireLatestImage()?.close()
                 }
             }, backgroundHandler)
         }
 
-        val outputs = listOf(imageReader!!.surface)
         try {
             camera.createCaptureSession(
-                outputs,
+                listOf(imageReader!!.surface),
                 object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(session: CameraCaptureSession) {
-                        Log.d(TAG, "CameraCaptureSession configured.")
-
+                        activeSession = session
                         try {
-                            // 1. Preview / Warmup Request to let AE converge
-                            // We use TEMPLATE_PREVIEW but target the ImageReader (JPEG).
-                            // This effectively takes a burst of JPEGs which we discard until ready.
-                            val previewRequest = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                            val warmup = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                                 addTarget(imageReader!!.surface)
                                 set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
                             }.build()
-
-                            // Start repeating to run AE
-                            session.setRepeatingRequest(previewRequest, null, backgroundHandler)
-
-                            // 2. Schedule the actual capture after delay
+                            session.setRepeatingRequest(warmup, null, backgroundHandler)
                             backgroundHandler?.postDelayed({
                                 try {
-                                    // Stop repeating (stop "preview")
                                     session.stopRepeating()
-
-                                    // 3. Create Final Capture Request
-                                    val captureRequest = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+                                    val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
                                         addTarget(imageReader!!.surface)
-                                        // Set orientation
                                         set(CaptureRequest.JPEG_ORIENTATION, getJpegOrientation(characteristics))
-                                        // Set AE Mode ON
                                         set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
                                     }.build()
-
-                                    // Enable saving
                                     isReadyToCapture = true
-
-                                    // Capture
-                                    session.capture(captureRequest, captureCallback, backgroundHandler)
-
-                                } catch (e: CameraAccessException) {
-                                    Log.e(TAG, "Capture error: ${e.message}")
-                                    stopCameraResources()
-                                } catch (e: IllegalStateException) {
-                                    Log.e(TAG, "Session closed before capture: ${e.message}")
-                                    stopCameraResources()
+                                    session.capture(request, captureCallback, backgroundHandler)
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "Capture request failed", e)
+                                    finishCurrentCapture()
                                 }
-                            }, 1000) // 1 second delay for AE convergence
-
-                        } catch (e: CameraAccessException) {
-                            Log.e(TAG, "Session access error: ${e.message}")
-                            stopCameraResources()
+                            }, 650L)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Session warmup failed", e)
+                            finishCurrentCapture()
                         }
                     }
 
                     override fun onConfigureFailed(session: CameraCaptureSession) {
-                        Log.e(TAG, "CameraCaptureSession failed!")
-                        stopCameraResources()
+                        Log.e(TAG, "Capture session configuration failed")
+                        session.close()
+                        finishCurrentCapture()
                     }
                 },
                 backgroundHandler
             )
-        } catch (e: CameraAccessException) {
-            Log.e(TAG, "Camera session error: ${e.message}", e)
-            stopCameraResources()
+        } catch (e: Exception) {
+            Log.e(TAG, "Capture session creation failed", e)
+            finishCurrentCapture()
         }
     }
 
     private val captureCallback = object : CameraCaptureSession.CaptureCallback() {
-        override fun onCaptureCompleted(session: CameraCaptureSession,
-                                        request: CaptureRequest,
-                                        result: TotalCaptureResult) {
-            Log.d(TAG, "Capture completed.")
-            session.close() // Close the session after capture
-            // Resources are closed in savePhoto's finally block
+        override fun onCaptureCompleted(
+            session: CameraCaptureSession,
+            request: CaptureRequest,
+            result: TotalCaptureResult
+        ) {
+            Log.d(TAG, "Capture completed")
         }
 
-        override fun onCaptureFailed(session: CameraCaptureSession,
-                                     request: CaptureRequest,
-                                     failure: CaptureFailure) {
+        override fun onCaptureFailed(
+            session: CameraCaptureSession,
+            request: CaptureRequest,
+            failure: CaptureFailure
+        ) {
             Log.e(TAG, "Capture failed: ${failure.reason}")
-            session.close()
-            stopCameraResources()
+            finishCurrentCapture()
         }
     }
 
-    // Helper to get JPEG orientation based on device orientation and camera sensor orientation
     private fun getJpegOrientation(characteristics: CameraCharacteristics): Int {
         val sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
-        val deviceRotation = (applicationContext.getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager).defaultDisplay.rotation
-        val surfaceRotation = when(deviceRotation) {
-            android.view.Surface.ROTATION_0 -> 0
+        @Suppress("DEPRECATION")
+        val rotation = (getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager)
+            .defaultDisplay.rotation
+        val degrees = when (rotation) {
             android.view.Surface.ROTATION_90 -> 90
             android.view.Surface.ROTATION_180 -> 180
             android.view.Surface.ROTATION_270 -> 270
             else -> 0
         }
-        val frontCamera = characteristics.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
-        return if (frontCamera) {
-            (sensorOrientation + surfaceRotation + 270) % 360
-        } else {
-            (sensorOrientation - surfaceRotation + 360) % 360
-        }
+        val front = characteristics.get(CameraCharacteristics.LENS_FACING) ==
+            CameraCharacteristics.LENS_FACING_FRONT
+        return if (front) (sensorOrientation + degrees + 270) % 360
+        else (sensorOrientation - degrees + 360) % 360
     }
 
-    /* -------------------------------------------------- */
-    /* Save JPEG to MediaStore                            */
-    /* -------------------------------------------------- */
     private fun savePhoto(bytes: ByteArray) {
-        val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-        val fileName = "IMG_$timeStamp.jpg"
-
-        val contentValues = ContentValues().apply {
+        val timestamp = System.currentTimeMillis()
+        val fileName = "IMG_${SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date(timestamp))}.jpg"
+        val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
             put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + File.separator + "IntruderSelfie")
-                put(MediaStore.MediaColumns.IS_PENDING, 1) // Mark as pending while writing
+                put(
+                    MediaStore.MediaColumns.RELATIVE_PATH,
+                    Environment.DIRECTORY_PICTURES + File.separator + "IntruderSelfie"
+                )
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
         }
 
-        val resolver = contentResolver
-        var uri: android.net.Uri? = null
-        var outputStream: OutputStream? = null
-
+        var uri: Uri? = null
+        var stream: OutputStream? = null
         try {
-            uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
-            if (uri == null) {
-                throw RuntimeException("Failed to create new MediaStore record.")
-            }
-
-            outputStream = resolver.openOutputStream(uri)
-            if (outputStream == null) {
-                throw RuntimeException("Failed to open output stream for $uri")
-            }
-
-            outputStream.write(bytes)
-            Log.d(TAG, "Photo saved via MediaStore: $uri")
-
+            uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                ?: throw IllegalStateException("MediaStore insert returned null")
+            stream = contentResolver.openOutputStream(uri)
+                ?: throw IllegalStateException("Cannot open photo output stream")
+            stream.write(bytes)
+            stream.flush()
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                contentValues.clear()
-                contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0) // Mark as not pending
-                resolver.update(uri, contentValues, null, null)
+                val published = ContentValues().apply {
+                    put(MediaStore.MediaColumns.IS_PENDING, 0)
+                }
+                contentResolver.update(uri, published, null, null)
             }
-
+            Log.i(TAG, "Saved one failed-attempt photo: $uri")
         } catch (e: Exception) {
-            Log.e(TAG, "Error saving photo: ${e.message}", e)
-            if (uri != null) {
-                // If error, delete the pending record
-                resolver.delete(uri, null, null)
-            }
+            Log.e(TAG, "Failed to save photo", e)
+            uri?.let { contentResolver.delete(it, null, null) }
         } finally {
-            outputStream?.close()
-            // Important: Close camera and quit thread only after saving is fully done
-            stopCameraResources() // Only close camera resources
+            try { stream?.close() } catch (_: Exception) {}
+            finishCurrentCapture()
         }
     }
 
-    private fun stopCameraResources() {
+    private fun finishCurrentCapture() {
+        val handler = backgroundHandler
+        if (handler != null && Looper.myLooper() != handler.looper) {
+            handler.post { finishCurrentCapture() }
+            return
+        }
+
+        isReadyToCapture = false
+        activeSession?.close()
+        activeSession = null
         cameraDevice?.close()
         cameraDevice = null
         imageReader?.close()
         imageReader = null
-        backgroundThread?.quitSafely()
-        backgroundThread = null // Set to null to allow re-creation
-        backgroundHandler = null // Set to null
-        isReadyToCapture = false // Reset
-        Log.d(TAG, "Camera resources closed.")
-        // The service does NOT stop itself here after a single capture.
-        // It remains running in the foreground, waiting for the next unlock event.
+        captureInProgress = false
+
+        if (pendingCaptureIds.isNotEmpty()) pendingCaptureIds.removeFirst()
+        captureNextIfIdle()
     }
 
-
     override fun onDestroy() {
+        stopSecurityAlarm()
+        activeSession?.close()
+        cameraDevice?.close()
+        imageReader?.close()
+        backgroundThread?.quitSafely()
         super.onDestroy()
-        Log.d(TAG, "Service destroyed.")
-        // Unregister the receiver when the service is destroyed
-        try {
-            unregisterReceiver(unlockReceiver)
-            Log.d(TAG, "UnlockBroadcastReceiver unregistered.")
-        } catch (e: IllegalArgumentException) {
-            Log.e(TAG, "Receiver not registered, or already unregistered: ${e.message}")
-        }
-        stopCameraResources() // Close camera resources on service destruction
     }
 }
